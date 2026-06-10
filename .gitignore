@@ -1,0 +1,11 @@
+# User config (contains local paths, possibly tokens)
+.call-assistant.json
+
+# Runtime state
+shared/cc_alive
+shared/cc_pipe_inbox.json
+shared/inbox_*.json
+shared/cc_outbox.md
+
+# Python cache
+__pycache__/

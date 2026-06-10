@@ -1,0 +1,22 @@
+{
+  "_comment": "call-assistant configuration — copy to .call-assistant.json and edit",
+  "gateway": {
+    "url": "http://localhost:18789",
+    "token_env": "GATEWAY_TOKEN",
+    "model": "openclaw/main",
+    "health_endpoint": "/health",
+    "chat_endpoint": "/v1/chat/completions"
+  },
+  "pipe": {
+    "server_script": "./shared/cc_push_server.py",
+    "pipe_name": "openclaw-cc-push",
+    "python": "python",
+    "startup_wait_sec": 3
+  },
+  "fallback": {
+    "outbox": "./shared/cc_outbox.md",
+    "timeout_sec": 120,
+    "max_retries": 1,
+    "retry_delay_sec": 2
+  }
+}
