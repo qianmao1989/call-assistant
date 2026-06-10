@@ -1,20 +1,25 @@
 ---
 name: call-assistant
-description: Reliable AI-to-AI messaging via Gateway API + Named Pipe. Auto-starts pipe server, auto-fallback to outbox. Never fails silently.
-version: 4.0.0
+description: Call 小助理 via Gateway API. Auto-starts pipe server, auto-fallback to cc_outbox.md. Never fails silently.
+version: 4.1.0
 author: qianmao1989
 license: MIT
-tags: [messaging, multi-agent, gateway, pipe, reliability]
+tags: [messaging, multi-agent, gateway, pipe, reliability, openclaw]
 ---
 
 # Call Assistant Skill
 
-Reliable communication channel between Claude Code and a local AI assistant (OpenClaw / Hermes / any OpenAI-compatible gateway).
+## When to use
+
+ANY time CC needs to send a message to 小助理 (OpenClaw agent). This includes:
+- Asking questions (data, files, schedules, etc.)
+- Sending task results
+- Any inter-agent communication
 
 ## Architecture
 
 ```
-CC (Claude Code)                    Assistant (OpenClaw/Hermes)
+CC (Claude Code)                    Assistant (OpenClaw)
       │                                        │
       ├─ Gateway API (stream:true) ────────────→│  Primary: CC → Assistant
       │                                        │
@@ -23,94 +28,85 @@ CC (Claude Code)                    Assistant (OpenClaw/Hermes)
       └─ Outbox fallback ──────────────────────→│  Backup: both directions
 ```
 
-**Two primary channels, one backup.** If Gateway fails, message is written to shared outbox. Never loses a message.
+## Pre-flight (automatic via script)
 
-## Quick Start
-
-```powershell
-# 1. Clone
-git clone https://github.com/qianmao1989/call-assistant.git
-
-# 2. Install
-.\install.ps1
-
-# 3. Configure
-notepad .call-assistant.json
-
-# 4. Test
-.\test\smoke_test.ps1
+```
+1. Read gateway token from openclaw.json (no hardcode, no env var)
+2. Test pipe connectivity via CreateFile (not Get-Process CommandLine)
+3. Auto-restart pipe server if dead (using python command, not hardcoded path)
+4. Send via Invoke-WebRequest with stream:true
+5. Parse streaming SSE response
+6. Fallback: cc_outbox.md if Gateway fails
 ```
 
 ## Usage
 
 ```powershell
-# Call assistant
-.\call_assistant.ps1 "What's the weather?"
+# One-shot call
+$reply = .\call_assistant.ps1 "[CC] your message here"
 
-# Custom timeout
-.\call_assistant.ps1 "Run batch job" -Timeout 180
-
-# Custom config path
-.\call_assistant.ps1 "msg" -Config "./prod/.call-assistant.json"
+# With longer timeout (default 120s)
+$reply = .\call_assistant.ps1 "[CC] long task message" -Timeout 180
 ```
 
-## Configuration
+## Config sources (v4.1 — zero hardcode)
 
-Copy `.call-assistant.json.example` to `.call-assistant.json`:
+| Config | Source |
+|--------|--------|
+| Gateway URL | `http://localhost:18789` (fixed) |
+| Token | Auto-read from `$env:USERPROFILE\.openclaw\openclaw.json` → `gateway.auth.token` |
+| Model | `openclaw/main` (fixed) |
+| Named Pipe | `\.\pipe\openclaw-cc-push` |
+| Pipe Server | `shared/cc_push_server.py` |
+| Fallback | `shared/cc_outbox.md` |
 
-```json
-{
-  "gateway": {
-    "url": "http://localhost:18789",
-    "token_env": "GATEWAY_TOKEN",
-    "model": "openclaw/main"
-  },
-  "pipe": {
-    "server_script": "./shared/cc_push_server.py",
-    "python": "python"
-  },
-  "fallback": {
-    "outbox": "./shared/cc_outbox.md",
-    "timeout_sec": 120,
-    "max_retries": 1
-  }
-}
-```
+## Rules
 
-Set your gateway token as an environment variable:
-
-```powershell
-[Environment]::SetEnvironmentVariable('GATEWAY_TOKEN', 'your-token', 'Machine')
-```
+1. **NEVER** hardcode token — script reads it from openclaw.json
+2. **NEVER** use bash curl for Chinese content — use the PowerShell script
+3. **ALWAYS** prefix message with `[CC]`
+4. **USE ENGLISH** for AI-to-AI messages — avoids UTF-8→GBK encoding issues
+5. **IF** script fails → check cc_outbox.md for reply after 30s
+6. **NEVER** retry more than once — if script fails twice, escalate to user
 
 ## Requirements
 
 - PowerShell 7+
-- Python 3.8+
-- A running OpenAI-compatible gateway (OpenClaw, Hermes, etc.)
+- Python 3.8+ (with pywin32 for pipe server)
+- OpenClaw gateway running on localhost:18789
 
-## How It Works
+## File Structure
 
-1. **Pre-flight** — validates `$env:GATEWAY_TOKEN` is set, Gateway `/health` responds
-2. **Pipe server** — auto-starts `cc_push_server.py` if not running
-3. **Send** — POSTs to Gateway v1/chat/completions with `stream:true`
-4. **Parse** — extracts streaming SSE response
-5. **Fallback** — on failure, writes to `cc_outbox.md`, tells user to check back
-
-## Protocol
-
-Messages use a simple prefix convention:
-- CC → Assistant: `[CC]` prefix
-- Assistant → CC: `[Assistant]` prefix
+```
+call-assistant/
+├── call_assistant.ps1              # Main script
+├── SKILL.md                        # This file
+├── _meta.json                      # Metadata
+├── README.md                       # Project overview
+├── install.ps1                     # One-click setup
+├── .call-assistant.json.example    # Config template (optional)
+├── shared/
+│   ├── cc_push_server.py           # Pipe listener (Assistant → CC)
+│   └── assistant_push.py           # Pipe client (manual push)
+└── test/
+    └── smoke_test.ps1              # End-to-end validation
+```
 
 ## Reliability
 
 | Scenario | Behavior |
 |----------|----------|
-| Gateway healthy | Direct streaming call |
-| Gateway timeout | Retry once, then outbox |
-| Pipe server down | Auto-start before each call |
-| All channels down | Write outbox, escalate to user |
+| Gateway healthy | Direct streaming SSE call |
+| Gateway timeout/401 | Retry once, then outbox |
+| Pipe down | Auto-start + CreateFile verify |
+| All channels down | Write cc_outbox.md, escalate |
+
+## Version History
+
+| Version | Date | Changes |
+|---------|------|---------|
+| 4.1.0 | 2026-06-11 | Token from openclaw.json, pipe CreateFile test, python PATH lookup |
+| 4.0.0 | 2026-06-10 | Smoke test, glob char class fix, ContentType, SSE parse robustness |
 
 ## License
 
