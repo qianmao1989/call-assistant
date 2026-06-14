@@ -1,22 +1,30 @@
-# call_assistant.ps1 v4.1 — CC ↔ AI Assistant Reliable Messaging
+# call_assistant.ps1 v5.0.0 — CC → 小助理 Doorbell Pattern
 # GitHub: https://github.com/qianmao1989/call-assistant
 # Requires: PowerShell 7+ (Python 3 optional — pipe server only)
 #
+# Doorbell Pattern:
+#   Outbox (Set-Content) = PRIMARY message body
+#   Gateway (stream:true) = DOORBELL only — "去看 cc_outbox.md"
+#   Pipe (cc_push_server.py) = RECEIVE channel for 小助理's replies
+#
 # Usage:
-#   .\call_assistant.ps1 "your message"                  # auto-detect token from openclaw.json
-#   .\call_assistant.ps1 "long task" -Timeout 180        # custom timeout
+#   .\call_assistant.ps1 "your message in English"       # write outbox + ring doorbell
+#   .\call_assistant.ps1 -Init                           # pipe server init only (once per session)
+#   .\call_assistant.ps1 "msg" -Timeout 60               # custom doorbell timeout
 #   .\call_assistant.ps1 "msg" -Token "sk-..."           # explicit token
 #   .\call_assistant.ps1 "msg" -Config "./custom.json"   # custom config
 
 param(
-    [Parameter(Mandatory=$true)]
-    [string]$Message,
+    [Parameter(Mandatory=$false)]
+    [string]$Message = "",
 
     [int]$Timeout = 0,
 
     [string]$Config = "",
 
-    [string]$Token = ""
+    [string]$Token = "",
+
+    [switch]$Init
 )
 
 $ErrorActionPreference = "Continue"
@@ -45,7 +53,7 @@ $defaultConfig = @{
     }
     fallback = @{
         outbox = "./shared/cc_outbox.md"
-        timeout_sec = 120
+        timeout_sec = 60
         max_retries = 1
         retry_delay_sec = 2
     }
@@ -77,6 +85,82 @@ if (Test-Path $configPath) {
 }
 
 if ($Timeout -eq 0) { $Timeout = $cfg.fallback.timeout_sec }
+
+# ═══════════════════════════════════════════
+# Init-only mode: start pipe server, verify, exit
+# ═══════════════════════════════════════════
+
+if ($Init) {
+    Write-Output "[CC] Pipe init mode — verifying pipe server..."
+
+    if (-not $cfg.pipe.enabled) {
+        Write-Output "[CC] Pipe disabled by config — nothing to init"
+        exit 0
+    }
+
+    # Check pipe with CreateFile
+    $pipeOk = $false
+    try {
+        $test = & $cfg.pipe.python -c @"
+import win32pipe, win32file
+try:
+    h = win32file.CreateFile(r'$PIPE_NAME', win32file.GENERIC_READ, 0, None, win32file.OPEN_EXISTING, 0, None)
+    h.Close()
+    print('ok')
+except: print('dead')
+"@ 2>$null
+        $pipeOk = ($test -eq 'ok')
+    } catch {
+        Write-Warning "[CC] Python '$($cfg.pipe.python)' not found"
+    }
+
+    if ($pipeOk) {
+        Write-Output "[CC] Pipe server already running ✓"
+        exit 0
+    }
+
+    # Try to start
+    Write-Output "[CC] Pipe server not running, starting..."
+    try {
+        if (Test-Path $pipeScript) {
+            $proc = Start-Process $cfg.pipe.python -ArgumentList $pipeScript -WindowStyle Hidden -PassThru
+            Start-Sleep -Seconds $cfg.pipe.startup_wait_sec
+
+            # Verify restart
+            try {
+                $test = & $cfg.pipe.python -c @"
+import win32pipe, win32file
+try:
+    h = win32file.CreateFile(r'$PIPE_NAME', win32file.GENERIC_READ, 0, None, win32file.OPEN_EXISTING, 0, None)
+    h.Close()
+    print('ok')
+except: print('dead')
+"@ 2>$null
+                $pipeOk = ($test -eq 'ok')
+            } catch {}
+        }
+    } catch {
+        Write-Error "[CC] Failed to start pipe server"
+        exit 1
+    }
+
+    if ($pipeOk) {
+        Write-Output "[CC] Pipe server started successfully ✓ (PID: $($proc.Id))"
+        exit 0
+    } else {
+        Write-Error "[CC] Pipe server start failed — Python may be missing or pywin32 not installed"
+        exit 1
+    }
+}
+
+# ═══════════════════════════════════════════
+# Validate: message required for non-init mode
+# ═══════════════════════════════════════════
+
+if (-not $Message) {
+    Write-Error "[CC] Message required. Usage: .\call_assistant.ps1 'your message' or .\call_assistant.ps1 -Init"
+    exit 1
+}
 
 # Resolve relative paths from script directory
 $GATEWAY = $cfg.gateway.url.TrimEnd('/')
@@ -188,11 +272,15 @@ except: print('dead')
 }
 
 # ═══════════════════════════════════════════
-# Step 3: Send via Gateway (with retry)
+# Step 3: Write outbox (primary), then notify via Gateway
 # ═══════════════════════════════════════════
 
-$msg = $Message
-if ($msg -notmatch '^\[CC\]') { $msg = "[CC] $msg" }
+# Always WRITE (replace) full message to outbox first — single-message channel, not a log
+$ts = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+Set-Content -Path $OUTBOX -Value "### [$ts] [CC]$([Environment]::NewLine)$Message$([Environment]::NewLine)" -Encoding UTF8
+
+# Gateway only sends a lightweight notification — no body content
+$msg = "去看 cc_outbox.md"
 
 $body = @{
     model = $cfg.gateway.model
@@ -231,22 +319,26 @@ for ($i = 1; $i -le $maxRetries; $i++) {
             Start-Sleep -Seconds $cfg.fallback.retry_delay_sec
         }
     } catch {
+        # Fault classification: external errors → do NOT retry
+        $errMsg = $_.Exception.Message
+        if ($errMsg -match '401|403|503') {
+            Write-Warning "[CC] External fault (Gateway $($matches[0])) — do NOT retry. Escalate to 小助理."
+            break
+        }
         if ($i -lt $maxRetries) {
-            Write-Warning "[CC] Attempt $i failed ($($_.Exception.Message)), retrying..."
+            Write-Warning "[CC] Internal fault (Attempt $i: $errMsg), retrying..."
             Start-Sleep -Seconds $cfg.fallback.retry_delay_sec
         }
     }
 }
 
 # ═══════════════════════════════════════════
-# Step 4: Output or fallback to outbox
+# Step 4: Report result
 # ═══════════════════════════════════════════
 
 if ($ok) {
     Write-Output $reply
 } else {
-    Write-Warning "[CC] Gateway failed — falling back to cc_outbox.md"
-    $ts = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
-    Add-Content -Path $OUTBOX -Value "### [$ts] [CC]$([Environment]::NewLine)$Message$([Environment]::NewLine)" -Encoding UTF8
-    Write-Output "FALLBACK: cc_outbox.md"
+    Write-Warning "[CC] Gateway doorbell failed — message already safe in cc_outbox.md"
+    Write-Warning "[CC] 小助理 may still read outbox. If no reply in 30s, escalate to 乾茂."
 }

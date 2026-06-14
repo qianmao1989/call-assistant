@@ -1,7 +1,7 @@
 {
   "name": "call-assistant",
-  "version": "4.1.0",
-  "description": "CC↔小助理即时通讯skill — Gateway API + Named Pipe双通道，Pipe自动拉起，战备降级，永不失联",
+  "version": "5.0.0",
+  "description": "CC→小助理 Doorbell Pattern — Outbox=Primary message body, Gateway=Doorbell only, Pipe=Receive channel. English-only AI-to-AI. Pipe auto-init. Never fails silently.",
   "author": "qianmao1989",
   "tags": ["messaging", "multi-agent", "gateway", "pipe", "reliability", "openclaw"],
   "category": "communication",
