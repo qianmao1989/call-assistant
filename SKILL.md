@@ -49,6 +49,45 @@ CC (Claude Code) ←──Named Pipe─────────── 小助理'
 - Doorbell in English, outbox body in English, pipe messages in English.
 - Why: Prevents UTF-8→GBK encoding corruption across Windows pipe/Gateway boundaries.
 
+## Message Type Format (Outbox Header)
+
+**Every outbox message MUST include a `Type:` header.** This tells 小助理 whether to reply or not.
+
+```
+Type: question | task_request | task_result | sync-notification | alert
+```
+
+| Type | Purpose | Reply Required |
+|------|---------|---------------|
+| `question` | Ask 小助理 for info/opinion | ✅ Yes |
+| `task_request` | Delegate a task to 小助理 | ✅ Yes (process + reply) |
+| `task_result` | CC reports task completion to 小助理 | ✅ Yes (acknowledge) |
+| `sync-notification` | C5 config sync notification | ❌ No reply needed |
+| `alert` | Urgent alert (proxy down, etc.) | ✅ Yes |
+
+### Format Template
+
+```
+# CC → 小助理 | YYYY-MM-DD
+
+Type: <type>
+
+## <title>
+
+<body>
+```
+
+### Example: C5 Sync Notification
+
+```
+# CC → 小助理 | 2026-06-15
+
+Type: sync-notification (no reply needed)
+
+## C5 Sync: CLAUDE.md updated
+...
+```
+
 ## Usage
 
 ### Via script (automated pipe + outbox + doorbell)
